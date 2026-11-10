@@ -8,14 +8,17 @@ Rules & Compliance:
 - Reads MOVEBANK_USER, MOVEBANK_PASS, and STUDY_ID from .env.
 - If license acceptance is requested, prints the terms and stops without auto-accepting.
 - Caches all downloads in /data/cache to avoid re-downloading.
+- Supports '--update' flag to perform a fresh fetch and verify Movebank credentials.
 - Saves filtered data to data/raw/movebank_events.csv.
 - Strictly keeps: timestamp, location_long, location_lat, individual_local_identifier, tag_local_identifier.
 """
 
 import os
 import sys
+import re
 import csv
 import base64
+import argparse
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -53,12 +56,14 @@ def load_env(env_path: Path) -> dict:
 
 def check_for_license_terms(content_sample: str) -> bool:
     """
-    Checks if the response indicates license terms need to be accepted.
+    Checks if the Movebank response indicates license terms need to be accepted.
     """
     indicators = [
         "License Terms:",
         "license-md5",
         "Please accept the license terms",
+        "By accepting this document",
+        "License Type:",
         "terms of use",
         "license terms"
     ]
@@ -66,9 +71,22 @@ def check_for_license_terms(content_sample: str) -> bool:
     return any(ind.lower() in lower_sample for ind in indicators)
 
 
+def strip_html_tags(text: str) -> str:
+    """
+    Helper to clean HTML markup from license responses for readable terminal display.
+    """
+    clean = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    clean = re.sub(r'</p>', '\n\n', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'<li>', '\n  • ', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'<[^>]+>', '', clean)
+    clean = clean.replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return clean.strip()
+
+
 def download_stream(url: str, output_path: Path, auth_header: str = None) -> None:
     """
     Downloads data in chunks with streaming to handle large datasets efficiently.
+    If license acceptance is requested, prints terms and stops with clear instructions.
     """
     headers = {"User-Agent": "GajRaksha/1.0 (Elephant Tracking Research)"}
     if auth_header:
@@ -82,19 +100,26 @@ def download_stream(url: str, output_path: Path, auth_header: str = None) -> Non
         text_sample = first_chunk.decode("utf-8", errors="replace")
 
         if check_for_license_terms(text_sample):
-            print("\n" + "=" * 70)
-            print("🛑 [MOVEBANK LICENSE ACCEPTANCE REQUIRED]")
-            print("=" * 70)
-            print(text_sample)
             # Read remainder of license if available
             rest = response.read(16384).decode("utf-8", errors="replace")
-            print(rest)
+            full_license = text_sample + rest
+            readable_license = strip_html_tags(full_license)
+
+            print("\n" + "=" * 70)
+            print("🛑 [MOVEBANK LICENSE TERMS ACCEPTANCE REQUIRED]")
             print("=" * 70)
-            print("INSTRUCTIONS: Movebank requires users to accept the study license.")
-            print("As per project safety rules, license terms are NEVER auto-accepted.")
-            print("Please log in to https://www.movebank.org, navigate to the study,")
-            print("review and accept the terms, then re-run this script.")
+            print(readable_license)
             print("=" * 70)
+            print("INSTRUCTIONS:")
+            print("1. Movebank requires that your account accepts the study terms before")
+            print("   downloading event tracking data directly through the REST API.")
+            print("2. In accordance with project rules, license terms are NEVER auto-accepted.")
+            print("3. To accept:")
+            print("   a. Log in to https://www.movebank.org with your credentials.")
+            print("   b. Open Studies -> Search for the Study ID or name.")
+            print("   c. Click 'Download' and accept the license terms once.")
+            print("   d. Re-run this script to pull tracking data directly.")
+            print("=" * 70 + "\n")
             sys.exit(0)
 
         # Write to destination file
@@ -184,7 +209,6 @@ def filter_and_format_csv(raw_csv_path: Path, target_csv_path: Path) -> dict:
 
                 # Parse date to track date range
                 try:
-                    # Movebank timestamps usually formatted like '2007-08-13 00:30:00.000'
                     ts_clean = ts_str.split(".")[0]
                     dt = datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S")
                     if earliest_date is None or dt < earliest_date:
@@ -209,6 +233,10 @@ def filter_and_format_csv(raw_csv_path: Path, target_csv_path: Path) -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Fetch and process Movebank elephant tracking data.")
+    parser.add_argument("--update", action="store_true", help="Force a fresh query to Movebank with credentials.")
+    args = parser.parse_args()
+
     print("🐘 GajRaksha - Movebank Elephant Data Fetcher")
     print("-" * 50)
 
@@ -230,22 +258,27 @@ def main():
     print(f"Study ID: {study_id}")
     cached_raw_file = CACHE_DIR / f"movebank_events_raw_{study_id}.csv"
 
-    # 3. Check cache rule: Cache every download in /data/cache and never re-download
-    if cached_raw_file.exists() and cached_raw_file.stat().st_size > 0:
+    # 3. Check caching vs update flag
+    should_download = args.update or not (cached_raw_file.exists() and cached_raw_file.stat().st_size > 0)
+
+    if not should_download:
         print(f"✓ Found cached download at: {cached_raw_file.relative_to(BASE_DIR)}")
-        print("  Skipping re-download to respect cache rule.")
+        print("  Skipping re-download to respect cache rule (use --update to refresh).")
     else:
-        # Prepare API URL
+        # Prepare Movebank direct-read API URL
         api_url = (
             f"https://www.movebank.org/movebank/service/direct-read"
             f"?entity_type=event&study_id={study_id}&sensor_type=gps"
         )
-        print(f"Connecting to Movebank direct-read endpoint for Study ID {study_id}...")
+        print(f"Connecting to Movebank direct-read API using credentials from .env...")
 
         auth_header = None
         if movebank_user and movebank_pass:
             auth_bytes = f"{movebank_user}:{movebank_pass}".encode("utf-8")
             auth_header = f"Basic {base64.b64encode(auth_bytes).decode('ascii')}"
+            print("✓ Basic Authentication credentials prepared.")
+        else:
+            print("ℹ No Movebank credentials found in .env; attempting public access.")
 
         try:
             download_stream(api_url, cached_raw_file, auth_header=auth_header)
@@ -253,14 +286,13 @@ def main():
         except urllib.error.HTTPError as e:
             if e.code == 401 and not (movebank_user and movebank_pass):
                 print(f"ℹ Movebank direct-read requires credentials for Study ID {study_id}.")
-                # If Study 736029750, fallback to Movebank Data Repository open direct bitstream
                 if study_id == "736029750":
                     print("ℹ Fetching published open-access Movebank repository bitstream for Study 736029750...")
                     repo_url = "https://datarepository.movebank.org/server/api/core/bitstreams/10240da1-0a99-42bf-a34f-eff15883bbfb/content"
                     download_stream(repo_url, cached_raw_file)
                     print(f"✓ Raw data downloaded and cached at: {cached_raw_file.relative_to(BASE_DIR)}")
                 else:
-                    print(f"Error 401: Please add your MOVEBANK_USER and MOVEBANK_PASS to .env.")
+                    print(f"Error 401: Please check your MOVEBANK_USER and MOVEBANK_PASS in .env.")
                     sys.exit(1)
             else:
                 print(f"HTTP Error {e.code}: {e.reason}")
