@@ -21,6 +21,9 @@ venv.bak/
 !/data/cache/.gitkeep
 /data/raw/*.csv
 !/data/raw/.gitkeep
+/data/processed/*.parquet
+/data/processed/*.csv
+!/data/processed/.gitkeep
 *.parquet
 *.h5
 *.pkl

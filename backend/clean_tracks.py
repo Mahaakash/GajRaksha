@@ -4,7 +4,8 @@ GajRaksha - Elephant GPS Tracking Data Cleaning Pipeline
 Cleans raw elephant GPS tracking data:
 1. Drops missing and (0, 0) coordinates.
 2. Drops duplicate timestamps per animal.
-3. Converts UTC timestamps to local timezone (configurable via .env or CLI, default: Asia/Kolkata).
+3. Converts UTC timestamps to local timezone based on region setting
+   (Default for Kruger: Africa/Johannesburg; configurable for India: Asia/Kolkata).
 4. Resamples to 1 fix per hour per animal.
 5. Removes unrealistic GPS jumps faster than 15 km/h.
 6. Saves cleaned dataset to data/clean_tracks.parquet.
@@ -31,9 +32,20 @@ VILLAGES_FILE = DATA_DIR / "raw" / "villages.csv"
 OUTPUT_PARQUET = DATA_DIR / "clean_tracks.parquet"
 OUTPUT_MAP = DATA_DIR / "track_map.png"
 
+# Region to timezone mapping (supports both Kruger training and India transfer)
+REGION_TIMEZONES = {
+    "kruger": "Africa/Johannesburg",
+    "south_africa": "Africa/Johannesburg",
+    "india": "Asia/Kolkata",
+    "assam": "Asia/Kolkata",
+    "karnataka": "Asia/Kolkata",
+    "west_bengal": "Asia/Kolkata",
+}
 
-def load_env_timezone(env_path: Path) -> str:
-    """Reads TIMEZONE from .env if present, otherwise defaults to Asia/Kolkata."""
+
+def load_env_config(env_path: Path) -> dict:
+    """Reads REGION and TIMEZONE from .env if present."""
+    config = {}
     if env_path.exists():
         with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -42,9 +54,27 @@ def load_env_timezone(env_path: Path) -> str:
                     continue
                 if "=" in line:
                     k, v = line.split("=", 1)
-                    if k.strip() == "TIMEZONE":
-                        return v.strip().strip("'\"")
-    return "Asia/Kolkata"
+                    config[k.strip()] = v.strip().strip("'\"")
+    return config
+
+
+def get_configured_timezone(cli_region: str = None, cli_timezone: str = None) -> tuple:
+    """
+    Determines the active region and timezone from CLI arguments, .env, or defaults.
+    Default for Kruger elephant tracks: Africa/Johannesburg.
+    """
+    env_cfg = load_env_config(BASE_DIR / ".env")
+    
+    region = (cli_region or env_cfg.get("REGION") or "kruger").lower()
+    
+    if cli_timezone:
+        timezone = cli_timezone
+    elif "TIMEZONE" in env_cfg:
+        timezone = env_cfg["TIMEZONE"]
+    else:
+        timezone = REGION_TIMEZONES.get(region, "Africa/Johannesburg")
+
+    return region, timezone
 
 
 def haversine_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -67,7 +97,6 @@ def haversine_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> fl
 def remove_speed_jumps(df_animal: pd.DataFrame, max_speed_kmh: float = 15.0) -> pd.DataFrame:
     """
     Filters out GPS anomaly points where speed from the last valid point exceeds max_speed_kmh.
-    Elephants typically walk at 4-6 km/h, with top short sprints up to 25-30 km/h.
     Over hourly intervals, sustained speeds > 15 km/h represent GPS jump noise.
     """
     if len(df_animal) <= 1:
@@ -97,7 +126,6 @@ def remove_speed_jumps(df_animal: pd.DataFrame, max_speed_kmh: float = 15.0) -> 
         if speed <= max_speed_kmh:
             valid_indices.append(idx)
             last_idx = idx
-        # If speed > max_speed_kmh, drop this noisy jump fix
 
     return df_animal.loc[valid_indices].copy()
 
@@ -124,7 +152,7 @@ def clean_tracking_data(raw_csv_path: Path, target_tz: str) -> pd.DataFrame:
     df["location_long"] = pd.to_numeric(df["location_long"], errors="coerce")
     df = df.dropna(subset=["location_lat", "location_long"])
 
-    # 2. Convert timestamps to datetime and apply timezone conversion
+    # 2. Convert timestamps to datetime and apply target local timezone
     print(f"  Converting timestamps (UTC -> {target_tz})...")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df["timestamp"] = df["timestamp"].dt.tz_convert(target_tz)
@@ -135,8 +163,8 @@ def clean_tracking_data(raw_csv_path: Path, target_tz: str) -> pd.DataFrame:
     df = df.drop_duplicates(subset=["individual_local_identifier", "timestamp"], keep="first")
     print(f"  Dropped {before_dups - len(df):,} duplicate timestamps per animal.")
 
-    # 4. Resample to 1 fix per hour per animal
-    print("  Resampling to 1 fix per hour per animal...")
+    # 4. Resample to 1 fix per hour per animal using local hour floor
+    print("  Resampling to 1 fix per hour per animal (in local hours)...")
     df["hour_bin"] = df["timestamp"].dt.floor("h")
     before_resample = len(df)
     # Keep the first recorded fix in each hourly bin for each animal
@@ -224,41 +252,93 @@ def plot_track_map(df: pd.DataFrame, output_image_path: Path, villages_csv_path:
     print(f"✓ Saved track visualization map to: {output_image_path.name}")
 
 
+def show_hourly_distribution_comparison(raw_csv_path: Path, df_clean: pd.DataFrame, old_tz: str, new_tz: str):
+    """
+    Prints a clear comparison of fixes per hour of day before (Asia/Kolkata)
+    and after (Africa/Johannesburg), showing how local night-time hours line up.
+    """
+    # Raw data timestamps in old timezone (Asia/Kolkata)
+    df_raw = pd.read_csv(raw_csv_path)
+    ts_old = pd.to_datetime(df_raw["timestamp"], utc=True).dt.tz_convert(old_tz)
+    hours_old = ts_old.dt.hour.value_counts()
+
+    # Clean data timestamps in new timezone (Africa/Johannesburg)
+    hours_new = df_clean["timestamp"].dt.hour.value_counts()
+
+    # Calculate average fixes per hour across the date span (~730 days)
+    span_days = max(1, (df_clean["timestamp"].max() - df_clean["timestamp"].min()).days)
+
+    print("\n" + "=" * 76)
+    print("HOURLY FIX DISTRIBUTION COMPARISON (BEFORE vs AFTER TIMEZONE CHANGE)")
+    print(f"Before: {old_tz} (Shifted +3h30m)  |  After: {new_tz} (True Kruger Local Time)")
+    print("=" * 76)
+    print(f"{'Hour (0-23)':<12} {'Period':<12} {'Raw Fixes ('+old_tz+')':<25} {'Clean Fixes ('+new_tz+')':<25}")
+    print("-" * 76)
+
+    night_fixes_old = 0
+    night_fixes_new = 0
+
+    for h in range(24):
+        cnt_old = hours_old.get(h, 0)
+        cnt_new = hours_new.get(h, 0)
+        
+        # Local night in Kruger is ~18:00 (6 PM) to 06:00 (6 AM)
+        is_night_hour = (h >= 18 or h < 6)
+        period = "🌙 Night" if is_night_hour else "☀️ Day"
+
+        if is_night_hour:
+            night_fixes_old += cnt_old
+            night_fixes_new += cnt_new
+
+        print(f"{h:02d}:00        {period:<12} {cnt_old:<25,d} {cnt_new:<25,d}")
+
+    print("-" * 76)
+    print(f"Total Night Fixes (18:00 - 06:00 Local Kruger Time):")
+    print(f"  • Using {old_tz} (Misaligned):      {night_fixes_old:,} fixes")
+    print(f"  • Using {new_tz} (Aligned to Kruger): {night_fixes_new:,} fixes")
+    print("=" * 76 + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Clean raw elephant GPS data.")
-    parser.add_argument("--timezone", type=str, default=None, help="Target timezone (e.g. Asia/Kolkata).")
+    parser.add_argument("--region", type=str, default=None, help="Target region (kruger or india).")
+    parser.add_argument("--timezone", type=str, default=None, help="Explicit timezone (e.g. Africa/Johannesburg).")
     args = parser.parse_args()
 
     print("=" * 60)
     print("🐘 GAJRAKSHA - GPS TRACK CLEANING PIPELINE")
     print("=" * 60)
 
-    # Determine timezone from CLI, .env, or default
-    target_tz = args.timezone or load_env_timezone(BASE_DIR / ".env")
+    # 1. Determine region and timezone
+    region, target_tz = get_configured_timezone(args.region, args.timezone)
+    print(f"Active Region:            {region.upper()}")
     print(f"Configured Local Timezone: {target_tz}")
 
-    # Run cleaning
+    # 2. Run cleaning pipeline with new timezone
     df_clean = clean_tracking_data(RAW_FILE, target_tz)
 
-    # Save to Parquet
+    # 3. Save to Parquet
     print(f"\nSaving cleaned tracks to: {OUTPUT_PARQUET.relative_to(BASE_DIR)}...")
     df_clean.to_parquet(OUTPUT_PARQUET, index=False, engine="pyarrow")
     print("✓ Parquet file successfully saved.")
 
-    # Generate Track Map
+    # 4. Generate Track Map
     print(f"\nRendering track map at: {OUTPUT_MAP.relative_to(BASE_DIR)}...")
     plot_track_map(df_clean, OUTPUT_MAP, VILLAGES_FILE)
 
-    # Print summary
+    # 5. Display Before/After Hourly Comparison (Asia/Kolkata vs Africa/Johannesburg)
+    show_hourly_distribution_comparison(RAW_FILE, df_clean, old_tz="Asia/Kolkata", new_tz=target_tz)
+
+    # 6. Print summary
     raw_df = pd.read_csv(RAW_FILE)
-    print("\n" + "=" * 60)
-    print("CLEANING SUMMARY:")
+    print("=" * 60)
+    print("FINAL SUMMARY:")
     print("=" * 60)
     print(f"Before (Raw Fixes):    {len(raw_df):,} rows")
     print(f"After (Cleaned Fixes): {len(df_clean):,} rows")
     print(f"Total Points Filtered: {len(raw_df) - len(df_clean):,} rows")
     print(f"Number of Elephants:   {df_clean['individual_local_identifier'].nunique()}")
-    print(f"Timezone Applied:      {target_tz}")
+    print(f"Region / Timezone:     {region.upper()} ({target_tz})")
     print(f"Date Range ({target_tz}):")
     print(f"  Start: {df_clean['timestamp'].min()}")
     print(f"  End:   {df_clean['timestamp'].max()}")
