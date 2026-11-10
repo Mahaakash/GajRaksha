@@ -19,6 +19,8 @@ venv.bak/
 # Data cache and large data files
 /data/cache/*
 !/data/cache/.gitkeep
+/data/raw/*.csv
+!/data/raw/.gitkeep
 *.parquet
 *.h5
 *.pkl
@@ -39,3 +41,4 @@ dist-ssr/
 .idea/
 .DS_Store
 Thumbs.db
+
