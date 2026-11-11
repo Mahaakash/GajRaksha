@@ -1,0 +1,13 @@
+village_id,name,location_lat,location_long,population,buffer_radius_km,description
+VIL_001,Mkhuhlu,-24.9814,31.3167,15000,5.0,Major semi-urban border settlement along Sabie River near Phabeni Gate
+VIL_002,Hluvukani,-24.6547,31.3283,11000,5.0,Border community adjacent to western reserve fenceline
+VIL_003,Welverdiend,-24.5833,31.3333,8500,5.0,Rural agrarian settlement directly abutting park boundary
+VIL_004,Acornhoek,-24.595,31.06,25000,5.0,Commercial and residential center in Bushbuckridge border area
+VIL_005,Thulamahashe,-24.7317,31.1969,14000,5.0,Community hub near northern Sabie border zone
+VIL_006,Kildare,-24.8986,31.2978,6000,5.0,Farming village along western boundary interface
+VIL_007,Justicia,-24.8361,31.3833,5500,5.0,Immediate border community with frequent wildlife movements
+VIL_008,Cork,-24.9167,31.3333,7000,5.0,Settlement situated along the riverine border corridor
+VIL_009,Lillydale,-24.9333,31.2833,4500,5.0,Agricultural community near southwestern park gate
+VIL_010,Huntington,-24.8731,31.3711,3800,5.0,Boundary village bordering Sabi Sand and Kruger game reserve
+VIL_011,Malelane,-25.4944,31.5083,18000,5.0,Town along the southern Crocodile River border corridor
+VIL_012,Matsulu,-25.5167,31.3333,20000,5.0,Township situated along the southwestern border mountains

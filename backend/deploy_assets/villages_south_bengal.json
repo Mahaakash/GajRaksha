@@ -1,0 +1,114 @@
+[
+  {
+    "name": "Jhargram",
+    "district": "Jhargram",
+    "lat": 22.45,
+    "lon": 86.9833,
+    "type": "town"
+  },
+  {
+    "name": "Lalgarh",
+    "district": "Jhargram",
+    "lat": 22.5853,
+    "lon": 87.0481,
+    "type": "village"
+  },
+  {
+    "name": "Belpahari",
+    "district": "Jhargram",
+    "lat": 22.6333,
+    "lon": 86.7667,
+    "type": "village"
+  },
+  {
+    "name": "Gopiballavpur",
+    "district": "Jhargram",
+    "lat": 22.2167,
+    "lon": 86.9,
+    "type": "village"
+  },
+  {
+    "name": "Kapgari",
+    "district": "Jhargram",
+    "lat": 22.5222,
+    "lon": 86.8756,
+    "type": "village"
+  },
+  {
+    "name": "Midnapore",
+    "district": "Paschim Medinipur",
+    "lat": 22.4309,
+    "lon": 87.3215,
+    "type": "city"
+  },
+  {
+    "name": "Kharagpur",
+    "district": "Paschim Medinipur",
+    "lat": 22.34,
+    "lon": 87.32,
+    "type": "town"
+  },
+  {
+    "name": "Garhbeta",
+    "district": "Paschim Medinipur",
+    "lat": 22.8667,
+    "lon": 87.35,
+    "type": "village"
+  },
+  {
+    "name": "Salboni",
+    "district": "Paschim Medinipur",
+    "lat": 22.6333,
+    "lon": 87.3167,
+    "type": "village"
+  },
+  {
+    "name": "Debra",
+    "district": "Paschim Medinipur",
+    "lat": 22.3956,
+    "lon": 87.5616,
+    "type": "village"
+  },
+  {
+    "name": "Bankura",
+    "district": "Bankura",
+    "lat": 23.2333,
+    "lon": 87.0667,
+    "type": "city"
+  },
+  {
+    "name": "Barjora",
+    "district": "Bankura",
+    "lat": 23.4259,
+    "lon": 87.2898,
+    "type": "village"
+  },
+  {
+    "name": "Bishnupur",
+    "district": "Bankura",
+    "lat": 23.0757,
+    "lon": 87.3146,
+    "type": "town"
+  },
+  {
+    "name": "Sonamukhi",
+    "district": "Bankura",
+    "lat": 23.3035,
+    "lon": 87.4139,
+    "type": "village"
+  },
+  {
+    "name": "Purulia",
+    "district": "Purulia",
+    "lat": 23.3333,
+    "lon": 86.3667,
+    "type": "city"
+  },
+  {
+    "name": "Baghmundi",
+    "district": "Purulia",
+    "lat": 23.2,
+    "lon": 86.05,
+    "type": "village"
+  }
+]

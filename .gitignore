@@ -1,9 +1,13 @@
+# =============================================================================
+# GajRaksha - .gitignore
+# =============================================================================
+
 # Environment variables and secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
-# Python
+# Python virtual environments & bytecode
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,33 +19,56 @@ ENV/
 env.bak/
 venv.bak/
 .venv/
+*/venv/
+*/__pycache__/
 
-# Data cache and large data files
-/data/cache/*
-!/data/cache/.gitkeep
-/data/raw/*.csv
-!/data/raw/.gitkeep
-/data/processed/*.parquet
-/data/processed/*.csv
-!/data/processed/.gitkeep
-*.parquet
-*.h5
-*.pkl
-*.joblib
-
-# Models
-/models/*
-!/models/.gitkeep
-
-# Node / Frontend
+# Node / Frontend build artifacts
 node_modules/
+*/node_modules/
 dist/
+frontend/dist/
 dist-ssr/
 *.local
 
-# IDE & OS
-.vscode/
-.idea/
+# Raw telemetry, GPS collar fixes, and large datasets (Protected)
+data/raw/
+/data/raw/
+data/cache/
+/data/cache/
+data/processed/
+/data/processed/
+data/reference/
+/data/reference/
+data/clean_tracks.parquet
+data/real_dataset.csv
+data/grid_features*.parquet
+data/south_bengal_districts.geojson
+*.parquet
+*.csv
+
+# Models & Binary weights
+models/
+/models/
+
+# System & IDE files
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+*.log
 
+# Large intermediate files and binaries (> 50 MB / non-source)
+*.h5
+*.joblib
+*.pkl
+*.tar.gz
+*.zip
+*.pdf
+
+# Testing screenshots and ephemeral map exports
+*.png
+!frontend/src/assets/*.png
+
+# Whitelist: Small derived deploy assets
+!backend/deploy_assets/
+!backend/deploy_assets/**

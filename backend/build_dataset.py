@@ -1,350 +1,257 @@
 """
-GajRaksha - Transferable Dataset Builder
-=======================================
-Transforms cleaned elephant GPS tracking data into a generalized ML dataset
-designed to transfer from Kruger training data to India deployment.
+GajRaksha - Training Dataset Builder: Used vs. Available Design
+==============================================================
+Transforms raw elephant GPS tracking fixes (presence points) into a
+balanced machine learning training dataset using the "Used vs Available"
+(Resource Selection Function) framework.
 
-Ecological Transferability Design:
-1. Excludes absolute geographic coordinates (latitude, longitude) as model features.
-2. Excludes calendar 'month' (hemispheric seasonal inversion).
-3. Excludes 'past_presence_count' (grid-cell spatial history specific to Kruger).
-4. Includes transferable ecological drivers:
-   - hour_of_day: Local hour of day (0-23)
-   - is_night: Binary flag (1 if between solar sunset and sunrise, 0 if day)
-   - rainfall_last_7_days: Rolling 7-day cumulative precipitation (mm)
-   - rainfall_last_30_days: Rolling 30-day cumulative precipitation (mm)
-   - speed_kmh: Movement velocity (km/h)
-   - step_distance_km: Hourly step displacement (km)
-   - heading_change_deg: Turning angle / direction change between steps
-   - dist_to_nearest_village_km: Distance to nearest community boundary
-5. Target: elephant_presence_risk_near_villages (1 if <= 5 km of village, 0 otherwise)
+=============================================================================
+"USED VS AVAILABLE" DESIGN EXPLANATION (IN SIMPLE WORDS):
+-----------------------------------------------------------------------------
+1. What does the collar record?
+   The GPS collar only logs where an elephant actually traveled. These are
+   "USED" locations (Positives, label = 1).
+   However, GPS collars never record "true absences" — we cannot tell where an
+   elephant purposefully avoided going simply because the collar never records
+   non-events.
+
+2. How do we create a comparison for machine learning?
+   To train a model to distinguish high-risk from low-risk areas, we need
+   counterexamples. We generate "AVAILABLE" points (Negatives, label = 0):
+   - For every 1 GPS fix (positive), we sample 5 background grid cells from
+     the same landscape.
+   - We assign each background cell a random timestamp within that specific
+     animal's active tracking period.
+
+3. What does this teach the model?
+   By comparing where the elephant chose to be (USED) against all the places
+   and times it could have been (AVAILABLE), the algorithm learns what
+   environmental factors (distance to water, distance to forest edge, proximity
+   to villages, crop density, hour of the day, night vs day, and rainfall)
+   drive elephant presence and village interface risk.
+=============================================================================
+
+Rules applied:
+- 1:5 ratio (5 background negatives for every positive GPS fix).
+- No month, past_presence_count, latitude, or longitude as features (ensures
+  transferability between ecosystems without memorizing spatial coordinates).
+- Cached rainfall from local daily repository.
+- Output saved to data/real_dataset.csv.
 """
 
 import os
-import sys
-import math
 import json
-import argparse
-import urllib.request
 from pathlib import Path
-from datetime import datetime, timedelta
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+from scipy.spatial import cKDTree
 
-# Directory paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
-PROCESSED_DIR = DATA_DIR / "processed"
-TRACKS_PARQUET = DATA_DIR / "clean_tracks.parquet"
-VILLAGES_FILE = DATA_DIR / "raw" / "villages.csv"
-OUTPUT_PARQUET = PROCESSED_DIR / "elephant_presence_dataset.parquet"
-OUTPUT_CSV = PROCESSED_DIR / "elephant_presence_dataset.csv"
-WEATHER_CACHE = CACHE_DIR / "kruger_rainfall_daily.json"
 
-# Strict Transferable Feature List (No lat, No lon, No month, No cell history)
-FEATURE_COLS = [
-    "hour_of_day",
-    "is_night",
-    "rainfall_last_7_days",
-    "rainfall_last_30_days",
-    "speed_kmh",
-    "step_distance_km",
-    "heading_change_deg",
-    "dist_to_nearest_village_km"
-]
-
-TARGET_COL = "elephant_presence_risk_near_villages"
+TRACKS_FILE = DATA_DIR / "clean_tracks.parquet"
+GRID_FILE = DATA_DIR / "grid_features_kruger.parquet"
+RAINFALL_FILE = CACHE_DIR / "kruger_rainfall_daily.json"
+OUTPUT_DATASET = DATA_DIR / "real_dataset.csv"
 
 
-def haversine_np(lon1, lat1, lon2, lat2):
-    """Vectorized Haversine distance in kilometers."""
-    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
-    c = 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
-    return 6371.0 * c
-
-
-def compute_bearing(lon1, lat1, lon2, lat2):
-    """Calculates compass heading / bearing from point 1 to point 2 in degrees (0-360)."""
-    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    y = np.sin(dlon) * np.cos(lat2)
-    x = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(dlon)
-    bearing = np.degrees(np.arctan2(y, x))
-    return (bearing + 360.0) % 360.0
-
-
-def calculate_solar_sunrise_sunset(lat: float, lon: float, dt: datetime) -> tuple:
+def load_cached_rainfall() -> dict:
     """
-    Computes exact astronomical sunrise and sunset hours (local time)
-    for any location and date using standard NOAA solar zenith equations.
+    Loads daily precipitation history from data/cache and pre-calculates
+    rolling 7-day and 30-day cumulative rainfall for instant lookup.
     """
-    day_of_year = dt.timetuple().tm_yday
-    gamma = 2.0 * math.pi / 365.0 * (day_of_year - 1 + (dt.hour - 12.0) / 24.0)
+    if not RAINFALL_FILE.exists():
+        raise FileNotFoundError(f"Rainfall cache not found at: {RAINFALL_FILE}")
 
-    eqtime = 229.18 * (
-        0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
-        - 0.014615 * math.cos(2.0 * gamma) - 0.040849 * math.sin(2.0 * gamma)
-    )
-    decl = (
-        0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma)
-        - 0.006758 * math.cos(2.0 * gamma) + 0.000907 * math.sin(2.0 * gamma)
-        - 0.002697 * math.cos(3.0 * gamma) + 0.00148 * math.sin(3.0 * gamma)
-    )
+    with open(RAINFALL_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    zenith = math.radians(90.833)  # Official solar zenith including atmospheric refraction
-    lat_rad = math.radians(lat)
-    cos_ha = (math.cos(zenith) / (math.cos(lat_rad) * math.cos(decl)) - math.tan(lat_rad) * math.tan(decl))
-
-    if cos_ha >= 1.0:
-        return 12.0, 12.0  # Polar night
-    elif cos_ha <= -1.0:
-        return 0.0, 24.0   # Polar day
-
-    ha = math.degrees(math.acos(cos_ha))
-    tz_offset_min = dt.utcoffset().total_seconds() / 60.0 if dt.utcoffset() else 0.0
-    s_noon = 720.0 - 4.0 * lon - eqtime + tz_offset_min
-    sunrise_hour = (s_noon - ha * 4.0) / 60.0
-    sunset_hour = (s_noon + ha * 4.0) / 60.0
-    return sunrise_hour, sunset_hour
-
-
-def load_or_fetch_rainfall(start_date: str = "2007-07-01", end_date: str = "2009-08-31") -> pd.DataFrame:
-    """
-    Loads daily historical rainfall from cache or fetches from Open-Meteo ERA5 archive.
-    Caches the response in data/cache to respect the zero-re-download rule.
-    """
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-    if WEATHER_CACHE.exists():
-        with open(WEATHER_CACHE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    else:
-        print("Fetching historical rainfall data from Open-Meteo archive...")
-        url = (
-            f"https://archive-api.open-meteo.com/v1/archive"
-            f"?latitude=-24.71&longitude=31.63"
-            f"&start_date={start_date}&end_date={end_date}"
-            f"&daily=precipitation_sum&timezone=Africa%2FJohannesburg"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "GajRaksha/1.0"})
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        with open(WEATHER_CACHE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-        print(f"✓ Cached historical rainfall to: {WEATHER_CACHE.name}")
-
+    daily = data.get("daily", {})
     df_rain = pd.DataFrame({
-        "date_str": data["daily"]["time"],
-        "precipitation_mm": data["daily"]["precipitation_sum"]
+        "date": pd.to_datetime(daily["time"]),
+        "precip": daily["precipitation_sum"]
+    }).sort_values("date").reset_index(drop=True)
+
+    # Calculate rolling 7-day and 30-day sums
+    df_rain["rain_7d"] = df_rain["precip"].rolling(window=7, min_periods=1).sum()
+    df_rain["rain_30d"] = df_rain["precip"].rolling(window=30, min_periods=1).sum()
+
+    # Fast O(1) dictionary lookup: 'YYYY-MM-DD' -> (rain_7d, rain_30d)
+    rain_lookup = {}
+    for _, row in df_rain.iterrows():
+        d_str = row["date"].strftime("%Y-%m-%d")
+        rain_lookup[d_str] = (round(float(row["rain_7d"]), 2), round(float(row["rain_30d"]), 2))
+
+    return rain_lookup
+
+
+def build_dataset(neg_ratio: int = 5, random_seed: int = 42) -> pd.DataFrame:
+    """
+    Constructs the training dataset combining Positives (Used GPS fixes)
+    and Negatives (Available landscape background cells).
+    """
+    np.random.seed(random_seed)
+
+    print("=" * 70)
+    print("BUILDING TRAINING DATASET (USED VS AVAILABLE DESIGN)")
+    print("=" * 70)
+
+    # 1. Load clean tracking data and Kruger grid features
+    print(f"Loading GPS tracks from: {TRACKS_FILE.name}...")
+    df_tracks = pd.read_parquet(TRACKS_FILE)
+    n_pos = len(df_tracks)
+    print(f"✓ Loaded {n_pos:,} positive GPS fixes across {df_tracks['individual_local_identifier'].nunique()} animals.")
+
+    print(f"Loading landscape grid from: {GRID_FILE.name}...")
+    df_grid = pd.read_parquet(GRID_FILE)
+    n_grid = len(df_grid)
+    print(f"✓ Loaded {n_grid:,} Kruger landscape grid cells.")
+
+    # Load rainfall lookup
+    print("Loading cached rainfall history (CHIRPS / NASA POWER)...")
+    rain_lookup = load_cached_rainfall()
+    print(f"✓ Rainfall lookup ready ({len(rain_lookup)} daily records).")
+
+    # -------------------------------------------------------------------------
+    # STEP A: Process POSITIVES ("USED" locations where elephants were tracked)
+    # -------------------------------------------------------------------------
+    print("\n[A] Processing Positives (label = 1)...")
+
+    # Map each GPS fix to its nearest spatial grid cell using KDTree
+    grid_coords = df_grid[["location_lon", "location_lat"]].values
+    track_coords = df_tracks[["location_long", "location_lat"]].values
+    kdtree = cKDTree(grid_coords)
+    _, nearest_cell_indices = kdtree.query(track_coords)
+
+    # Extract environmental features from the matched grid cells
+    matched_grid_cells = df_grid.iloc[nearest_cell_indices].reset_index(drop=True)
+
+    # Extract local temporal features
+    ts_pos = pd.to_datetime(df_tracks["timestamp"])
+    # Ensure local time in Africa/Johannesburg (UTC+2)
+    if ts_pos.dt.tz is None:
+        ts_pos = ts_pos.dt.tz_localize("Africa/Johannesburg")
+    else:
+        ts_pos = ts_pos.dt.tz_convert("Africa/Johannesburg")
+
+    hours_pos = ts_pos.dt.hour.values
+    # Nighttime rule: night between 18:00 (6 PM) and 06:00 (6 AM)
+    is_night_pos = ((hours_pos >= 18) | (hours_pos < 6)).astype(int)
+
+    # Lookup rolling rainfall
+    date_strs_pos = ts_pos.dt.strftime("%Y-%m-%d").values
+    rain_7d_pos = np.array([rain_lookup.get(d, (0.0, 0.0))[0] for d in date_strs_pos])
+    rain_30d_pos = np.array([rain_lookup.get(d, (0.0, 0.0))[1] for d in date_strs_pos])
+
+    df_pos = pd.DataFrame({
+        "timestamp": ts_pos.dt.strftime("%Y-%m-%d %H:%M:%S").values,
+        "animal_id": df_tracks["individual_local_identifier"].values,
+        "cell_id": matched_grid_cells["cell_id"].values,
+        "hour_of_day": hours_pos,
+        "is_night": is_night_pos,
+        "rainfall_last_7_days": rain_7d_pos,
+        "rainfall_last_30_days": rain_30d_pos,
+        "distance_to_forest_edge_km": matched_grid_cells["distance_to_forest_edge_km"].values,
+        "distance_to_water_km": matched_grid_cells["distance_to_water_km"].values,
+        "distance_to_village_km": matched_grid_cells["distance_to_village_km"].values,
+        "crop_density": matched_grid_cells["crop_density"].values,
+        "presence": np.ones(n_pos, dtype=int)  # Positives: Used = 1
     })
-    df_rain["precipitation_mm"] = df_rain["precipitation_mm"].fillna(0.0)
-    df_rain["date"] = pd.to_datetime(df_rain["date_str"]).dt.date
+    print(f"✓ Created {len(df_pos):,} positive rows.")
 
-    # Compute rolling 7-day and 30-day cumulative sums
-    df_rain["rainfall_last_7_days"] = df_rain["precipitation_mm"].rolling(7, min_periods=1).sum()
-    df_rain["rainfall_last_30_days"] = df_rain["precipitation_mm"].rolling(30, min_periods=1).sum()
+    # -------------------------------------------------------------------------
+    # STEP B: Generate NEGATIVES ("AVAILABLE" background landscape samples)
+    # -------------------------------------------------------------------------
+    print(f"\n[B] Sampling Negatives (label = 0, ratio 1:{neg_ratio})...")
+    # For each animal, sample background cells from the grid at random timestamps
+    # within that specific animal's collar active tracking window.
+    neg_list = []
 
-    return df_rain.set_index("date")
+    for animal, group in df_tracks.groupby("individual_local_identifier"):
+        n_animal_pos = len(group)
+        n_animal_neg = n_animal_pos * neg_ratio
 
+        animal_ts = pd.to_datetime(group["timestamp"])
+        t_min = animal_ts.min().timestamp()
+        t_max = animal_ts.max().timestamp()
 
-def build_dataset():
-    print("=" * 65)
-    print("🐘 GAJRAKSHA - TRANSFERABLE DATASET BUILDER")
-    print("=" * 65)
+        # 1. Random background grid cells across the Kruger landscape
+        rand_cell_idx = np.random.randint(0, n_grid, size=n_animal_neg)
+        sampled_cells = df_grid.iloc[rand_cell_idx].reset_index(drop=True)
 
-    # 1. Load clean tracks and villages
-    if not TRACKS_PARQUET.exists():
-        raise FileNotFoundError(f"Clean tracks file missing: {TRACKS_PARQUET}")
-    if not VILLAGES_FILE.exists():
-        raise FileNotFoundError(f"Villages reference file missing: {VILLAGES_FILE}")
+        # 2. Random timestamps within this animal's observation period
+        rand_sec = np.random.uniform(t_min, t_max, size=n_animal_neg)
+        rand_ts = pd.to_datetime(rand_sec, unit="s", utc=True).tz_convert("Africa/Johannesburg")
 
-    print(f"Loading cleaned GPS tracks from: {TRACKS_PARQUET.name}...")
-    df = pd.read_parquet(TRACKS_PARQUET)
-    print(f"Loading village locations from: {VILLAGES_FILE.name}...")
-    villages = pd.read_csv(VILLAGES_FILE)
+        rand_hours = rand_ts.hour.values
+        rand_is_night = ((rand_hours >= 18) | (rand_hours < 6)).astype(int)
 
-    print(f"Loaded {len(df):,} GPS fixes across {df['individual_local_identifier'].nunique()} elephants.")
-    print(f"Loaded {len(villages)} border villages.")
+        rand_date_strs = rand_ts.strftime("%Y-%m-%d").values
+        rand_rain_7d = np.array([rain_lookup.get(d, (0.0, 0.0))[0] for d in rand_date_strs])
+        rand_rain_30d = np.array([rain_lookup.get(d, (0.0, 0.0))[1] for d in rand_date_strs])
 
-    # 2. Calculate Distance to Nearest Village
-    print("\nComputing distance to nearest village for all GPS fixes...")
-    v_lats = villages["location_lat"].values
-    v_lons = villages["location_long"].values
-    v_names = villages["name"].values
-    v_ids = villages["village_id"].values
-    v_buffers = villages["buffer_radius_km"].values
+        df_animal_neg = pd.DataFrame({
+            "timestamp": rand_ts.strftime("%Y-%m-%d %H:%M:%S").values,
+            "animal_id": animal,
+            "cell_id": sampled_cells["cell_id"].values,
+            "hour_of_day": rand_hours,
+            "is_night": rand_is_night,
+            "rainfall_last_7_days": rand_rain_7d,
+            "rainfall_last_30_days": rand_rain_30d,
+            "distance_to_forest_edge_km": sampled_cells["distance_to_forest_edge_km"].values,
+            "distance_to_water_km": sampled_cells["distance_to_water_km"].values,
+            "distance_to_village_km": sampled_cells["distance_to_village_km"].values,
+            "crop_density": sampled_cells["crop_density"].values,
+            "presence": np.zeros(n_animal_neg, dtype=int)  # Negatives: Available = 0
+        })
+        neg_list.append(df_animal_neg)
+        print(f"  • Animal {animal}: {n_animal_pos:,} positives -> generated {n_animal_neg:,} random background negatives.")
 
-    min_dists = []
-    nearest_names = []
-    nearest_ids = []
-    presence_risks = []
+    df_neg = pd.concat(neg_list, ignore_index=True)
+    print(f"✓ Total negative rows generated: {len(df_neg):,}")
 
-    track_lats = df["location_lat"].values
-    track_lons = df["location_long"].values
+    # -------------------------------------------------------------------------
+    # STEP C: Combine, Shuffle & Save
+    # -------------------------------------------------------------------------
+    print("\n[C] Combining and shuffling full dataset...")
+    df_combined = pd.concat([df_pos, df_neg], ignore_index=True)
+    df_combined = df_combined.sample(frac=1.0, random_state=random_seed).reset_index(drop=True)
 
-    for i in range(len(df)):
-        dists = haversine_np(track_lons[i], track_lats[i], v_lons, v_lats)
-        closest_idx = np.argmin(dists)
-        closest_dist = dists[closest_idx]
-        buffer_thresh = v_buffers[closest_idx]
+    # Save to data/real_dataset.csv
+    OUTPUT_DATASET.parent.mkdir(parents=True, exist_ok=True)
+    df_combined.to_csv(OUTPUT_DATASET, index=False)
+    print(f"✓ Saved final dataset to: {OUTPUT_DATASET}")
 
-        min_dists.append(round(float(closest_dist), 3))
-        nearest_names.append(v_names[closest_idx])
-        nearest_ids.append(v_ids[closest_idx])
-        
-        # Target: 1 if elephant is within community buffer radius (5.0 km), 0 otherwise
-        presence_risks.append(1 if closest_dist <= buffer_thresh else 0)
+    # -------------------------------------------------------------------------
+    # STEP D: Display Class Balance & Summary
+    # -------------------------------------------------------------------------
+    total_rows = len(df_combined)
+    pos_count = int((df_combined["presence"] == 1).sum())
+    neg_count = int((df_combined["presence"] == 0).sum())
 
-    df["dist_to_nearest_village_km"] = min_dists
-    df["nearest_village_name"] = nearest_names
-    df["nearest_village_id"] = nearest_ids
-    df[TARGET_COL] = presence_risks
+    print("\n" + "=" * 70)
+    print("DATASET CLASS BALANCE:")
+    print("=" * 70)
+    print(f"Total rows:        {total_rows:,}")
+    print(f"Positives (Used):  {pos_count:,} ({pos_count / total_rows * 100:.2f}%) [Class 1]")
+    print(f"Negatives (Avail): {neg_count:,} ({neg_count / total_rows * 100:.2f}%) [Class 0]")
+    print(f"Class Ratio:       1 : {neg_count / pos_count:.1f}")
+    print("=" * 70)
 
-    # 3. Compute Local Time & Solar Day/Night
-    print("Computing local hour_of_day and solar sunrise/sunset is_night...")
-    # hour_of_day (local 0 to 23)
-    df["hour_of_day"] = df["timestamp"].dt.hour
+    print("\nFINAL LIST OF COLUMNS:")
+    print("-" * 70)
+    for i, col in enumerate(df_combined.columns, 1):
+        print(f"{i:2d}. {col}")
+    print("-" * 70)
 
-    # is_night: Calculated using exact solar sunrise and sunset for each date and location
-    # Precompute for unique (date, round_lat, round_lon) to execute in milliseconds
-    dates = df["timestamp"].dt.date.values
-    unique_dates = sorted(list(set(dates)))
-    center_lat = float(df["location_lat"].mean())
-    center_lon = float(df["location_long"].mean())
+    print("\nSAMPLE 5 ROWS:")
+    print("-" * 70)
+    print(df_combined.head(5).to_string())
+    print("-" * 70)
 
-    # Map date to (sunrise_hour, sunset_hour)
-    sun_times = {}
-    sample_ts = df["timestamp"].iloc[0]
-    for d in unique_dates:
-        dt_noon = datetime(d.year, d.month, d.day, 12, 0, tzinfo=sample_ts.tzinfo)
-        sr, ss = calculate_solar_sunrise_sunset(center_lat, center_lon, dt_noon)
-        sun_times[d] = (sr, ss)
-
-    is_night_list = []
-    for i in range(len(df)):
-        d = dates[i]
-        hour_frac = df["timestamp"].iloc[i].hour + df["timestamp"].iloc[i].minute / 60.0
-        sr, ss = sun_times[d]
-        # Night: before sunrise or after sunset
-        is_night_list.append(1 if (hour_frac < sr or hour_frac > ss) else 0)
-
-    df["is_night"] = is_night_list
-
-    # 4. Integrate Historical Rainfall (7-day and 30-day cumulative sums)
-    print("Merging rolling 7-day and 30-day rainfall...")
-    rain_df = load_or_fetch_rainfall()
-    
-    df["date_only"] = df["timestamp"].dt.date
-    df = df.merge(
-        rain_df[["rainfall_last_7_days", "rainfall_last_30_days"]],
-        left_on="date_only",
-        right_index=True,
-        how="left"
-    )
-    df["rainfall_last_7_days"] = df["rainfall_last_7_days"].fillna(0.0).round(2)
-    df["rainfall_last_30_days"] = df["rainfall_last_30_days"].fillna(0.0).round(2)
-    df = df.drop(columns=["date_only"])
-
-    # 5. Compute Movement Dynamics (Speed, Step Displacement, Heading Change)
-    print("Calculating step displacement, movement speed, and heading turn angle...")
-    df = df.sort_values(by=["individual_local_identifier", "timestamp"]).reset_index(drop=True)
-
-    step_distances = []
-    speeds = []
-    heading_changes = []
-
-    for animal_id, group in df.groupby("individual_local_identifier"):
-        glats = group["location_lat"].values
-        glons = group["location_long"].values
-        gtimes = group["timestamp"].values
-
-        bearings = []
-        for j in range(len(group)):
-            if j == 0:
-                step_distances.append(0.0)
-                speeds.append(0.0)
-                bearings.append(0.0)
-                heading_changes.append(0.0)
-                continue
-
-            # Haversine step displacement
-            dist_km = haversine_np(glons[j - 1], glats[j - 1], glons[j], glats[j])
-            dt_hours = (pd.to_datetime(gtimes[j]) - pd.to_datetime(gtimes[j - 1])).total_seconds() / 3600.0
-
-            speed = dist_km / dt_hours if dt_hours > 0 else 0.0
-            bearing = compute_bearing(glons[j - 1], glats[j - 1], glons[j], glats[j])
-
-            # Turning angle change
-            prev_bearing = bearings[-1]
-            diff = abs(bearing - prev_bearing)
-            turn = 360.0 - diff if diff > 180.0 else diff
-
-            step_distances.append(round(float(dist_km), 3))
-            speeds.append(round(float(min(speed, 25.0)), 3))
-            bearings.append(bearing)
-            heading_changes.append(round(float(turn), 1))
-
-    df["step_distance_km"] = step_distances
-    df["speed_kmh"] = speeds
-    df["heading_change_deg"] = heading_changes
-
-    # 6. Evaluation Split Columns (Rule: Animal split & Time split, never random)
-    print("Setting up chronological time-split indicator (75% train / 25% test)...")
-    cutoff_idx = int(len(df) * 0.75)
-    time_sorted = df.sort_values("timestamp")
-    time_cutoff = time_sorted.iloc[cutoff_idx]["timestamp"]
-    df["split_time_test"] = (df["timestamp"] >= time_cutoff).astype(int)
-
-    # 7. Save Processed Datasets
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"\nSaving processed dataset to: {OUTPUT_PARQUET.relative_to(BASE_DIR)}...")
-    df.to_parquet(OUTPUT_PARQUET, index=False, engine="pyarrow")
-    
-    # Also save a sample CSV for easy inspection
-    csv_sample_path = PROCESSED_DIR / "elephant_presence_dataset_sample.csv"
-    df.head(1000).to_csv(csv_sample_path, index=False)
-    print(f"✓ Saved Parquet dataset and preview CSV.")
-
-    # 8. Report Column List and Class Balance
-    total_fixes = len(df)
-    pos_count = (df[TARGET_COL] == 1).sum()
-    neg_count = (df[TARGET_COL] == 0).sum()
-    pos_pct = (pos_count / total_fixes) * 100.0
-    neg_pct = (neg_count / total_fixes) * 100.0
-
-    print("\n" + "=" * 65)
-    print("NEW FEATURE & COLUMN LIST (STRICTLY TRANSFERABLE):")
-    print("=" * 65)
-    print(f"Model Feature Columns ({len(FEATURE_COLS)} features):")
-    for idx, col in enumerate(FEATURE_COLS, 1):
-        print(f"  {idx}. {col:<28} [dtype: {df[col].dtype}]")
-
-    print("\nExcluded Features (As per transferability rules):")
-    print("  ✗ latitude / longitude      (Spatial absolute coordinates - non-transferable)")
-    print("  ✗ month                     (Hemispheric season inversion - non-transferable)")
-    print("  ✗ past_presence_count       (Kruger-specific cell history - non-transferable)")
-
-    print(f"\nTarget Variable:")
-    print(f"  ★ {TARGET_COL:<28} [dtype: {df[TARGET_COL].dtype}]")
-
-    print("\nMetadata Columns (Kept for map display, validation splits, and API):")
-    metadata_cols = ["timestamp", "location_lat", "location_long", "individual_local_identifier", "nearest_village_name", "split_time_test"]
-    for col in metadata_cols:
-        print(f"  • {col}")
-
-    print("\n" + "=" * 65)
-    print("TARGET CLASS BALANCE:")
-    print("=" * 65)
-    print(f"Total Records:                     {total_fixes:,} hourly fixes")
-    print(f"Class 0 (Normal / Outside Buffer):  {neg_count:,} ({neg_pct:.2f}%)")
-    print(f"Class 1 (High Presence Risk Zone): {pos_count:,} ({pos_pct:.2f}%)")
-    print(f"Presence Risk Ratio:               1 in {int(round(total_fixes / pos_count))} fixes")
-    print("=" * 65 + "\n")
+    return df_combined
 
 
 if __name__ == "__main__":

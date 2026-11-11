@@ -1,0 +1,103 @@
+{
+  "dataset": {
+    "source": "data/real_dataset.csv",
+    "total_rows": 206898,
+    "positive_count": 34483,
+    "negative_count": 172415,
+    "imbalance_ratio": 5.0,
+    "features": [
+      "hour_of_day",
+      "is_night",
+      "rainfall_last_7_days",
+      "rainfall_last_30_days",
+      "distance_to_forest_edge_km",
+      "distance_to_water_km",
+      "distance_to_village_km",
+      "crop_density"
+    ]
+  },
+  "group_kfold_by_animal": {
+    "n_splits": 4,
+    "folds": [
+      {
+        "fold": 1,
+        "test_animal": "AM110",
+        "train_samples": 141876,
+        "test_samples": 65022,
+        "roc_auc": 0.2442,
+        "pr_auc": 0.1052,
+        "precision": 0.0178,
+        "recall": 0.0155,
+        "f1": 0.0166
+      },
+      {
+        "fold": 2,
+        "test_animal": "AM105",
+        "train_samples": 150894,
+        "test_samples": 56004,
+        "roc_auc": 0.3339,
+        "pr_auc": 0.118,
+        "precision": 0.065,
+        "recall": 0.0527,
+        "f1": 0.0582
+      },
+      {
+        "fold": 3,
+        "test_animal": "AM108",
+        "train_samples": 155052,
+        "test_samples": 51846,
+        "roc_auc": 0.652,
+        "pr_auc": 0.2777,
+        "precision": 0.3089,
+        "recall": 0.3861,
+        "f1": 0.3432
+      },
+      {
+        "fold": 4,
+        "test_animal": "AM107",
+        "train_samples": 172872,
+        "test_samples": 34026,
+        "roc_auc": 0.691,
+        "pr_auc": 0.3143,
+        "precision": 0.3176,
+        "recall": 0.4548,
+        "f1": 0.374
+      }
+    ],
+    "mean_roc_auc": 0.4803,
+    "std_roc_auc": 0.2244,
+    "mean_pr_auc": 0.2038,
+    "std_pr_auc": 0.1076,
+    "mean_precision": 0.1773,
+    "mean_recall": 0.2273
+  },
+  "time_holdout_last_20pct": {
+    "train_rows": 165518,
+    "test_rows": 41380,
+    "train_period": "2007-08-13 02:30:00 to 2008-12-22 01:51:33",
+    "test_period": "2008-12-22 01:52:41 to 2009-08-12 23:00:00",
+    "roc_auc": 0.7934,
+    "pr_auc": 0.3775,
+    "precision": 0.3717,
+    "recall": 0.5264,
+    "f1": 0.4357
+  },
+  "shap_feature_importance": {
+    "distance_to_forest_edge_km": 0.9256,
+    "distance_to_water_km": 0.9214,
+    "distance_to_village_km": 0.5601,
+    "crop_density": 0.3284,
+    "rainfall_last_30_days": 0.2263,
+    "rainfall_last_7_days": 0.1004,
+    "hour_of_day": 0.0137,
+    "is_night": 0.0004
+  },
+  "model_file": "D:\\GAJRAKSHA\\models\\risk_model.pkl",
+  "leakage_audit": {
+    "passed": true,
+    "checked_spatial_coordinates": "Excluded (lat/lon removed)",
+    "checked_seasonal_memorization": "Excluded (month removed)",
+    "highest_linear_correlation": 0.084,
+    "notes": "GroupKFold tests on completely unseen individuals with zero identity overlap."
+  }
+}
