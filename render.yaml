@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: gajraksha-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: REGION
+        value: south_bengal
+      - key: TIMEZONE
+        value: Asia/Kolkata
+
+  - type: web
+    name: gajraksha-frontend
+    env: static
+    region: oregon
+    plan: free
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://gajraksha-api.onrender.com
+
