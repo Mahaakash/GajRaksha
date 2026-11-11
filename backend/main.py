@@ -42,6 +42,7 @@ from scipy.spatial import cKDTree
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # Directory paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -650,6 +651,12 @@ def get_feature_importance_chart():
     if not chart_path.exists():
         raise HTTPException(status_code=404, detail="Feature importance chart not found.")
     return FileResponse(chart_path, media_type="image/png")
+
+
+# Mount built frontend static files if present (for single-container Docker / Render deployment)
+FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
 
 
 if __name__ == "__main__":
