@@ -6,6 +6,10 @@ import './App.css';
 // Ensure global L is assigned for Leaflet.heat
 window.L = L;
 
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD
+  ? "https://gajraksha-20mp.onrender.com"
+  : "http://localhost:8000");
+
 const REGION_CONFIGS = {
   south_bengal: {
     name: 'South Bengal',
@@ -86,7 +90,7 @@ export default function App() {
   useEffect(() => {
     async function fetchModelInfo() {
       try {
-        const res = await fetch('/model-info');
+        const res = await fetch(`${API_BASE}/model-info`);
         const data = await res.json();
         setModelInfo(data);
       } catch (err) {
@@ -204,7 +208,7 @@ export default function App() {
 
     async function loadTracks() {
       try {
-        const res = await fetch('/tracks-sample?limit_per_animal=200');
+        const res = await fetch(`${API_BASE}/tracks-sample?limit_per_animal=200`);
         const data = await res.json();
         setTracksData(data);
 
@@ -297,12 +301,12 @@ export default function App() {
         const heatFactory = L.heatLayer || window.L.heatLayer;
 
         // 1. Fetch Risk Grid Points
-        const gridUrl = `/risk-grid?region=${region}&hour=${debouncedHour}&rainfall=${debouncedRainfall}&limit=20000`;
+        const gridUrl = `${API_BASE}/risk-grid?region=${region}&hour=${debouncedHour}&rainfall=${debouncedRainfall}&limit=20000`;
         const gridRes = await fetch(gridUrl);
         const gridData = await gridRes.json();
 
         // 2. Fetch Villages
-        const villageUrl = `/village-risk?region=${region}&hour=${debouncedHour}&rainfall=${debouncedRainfall}`;
+        const villageUrl = `${API_BASE}/village-risk?region=${region}&hour=${debouncedHour}&rainfall=${debouncedRainfall}`;
         const villageRes = await fetch(villageUrl);
         const villageData = await villageRes.json();
 
