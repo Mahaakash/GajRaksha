@@ -46,18 +46,35 @@ from fastapi.staticfiles import StaticFiles
 
 # Directory paths
 BASE_DIR = Path(__file__).resolve().parent.parent
+BACKEND_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 CACHE_DIR = DATA_DIR / "cache"
+DEPLOY_ASSETS_DIR = BACKEND_DIR / "deploy_assets"
 
 MODEL_PKL = MODELS_DIR / "risk_model.pkl"
+if not MODEL_PKL.exists() and (DEPLOY_ASSETS_DIR / "risk_model.pkl").exists():
+    MODEL_PKL = DEPLOY_ASSETS_DIR / "risk_model.pkl"
+
 MODEL_JOBLIB = MODELS_DIR / "elephant_presence_risk_xgb.joblib"
+
 METRICS_JSON = MODELS_DIR / "metrics.json"
+if not METRICS_JSON.exists() and (DEPLOY_ASSETS_DIR / "metrics.json").exists():
+    METRICS_JSON = DEPLOY_ASSETS_DIR / "metrics.json"
 
 PARQUET_SB = DATA_DIR / "grid_features_south_bengal.parquet"
+if not PARQUET_SB.exists() and (DEPLOY_ASSETS_DIR / "grid_features_south_bengal.parquet").exists():
+    PARQUET_SB = DEPLOY_ASSETS_DIR / "grid_features_south_bengal.parquet"
+
 PARQUET_KRUGER = DATA_DIR / "grid_features_kruger.parquet"
+if not PARQUET_KRUGER.exists() and (DEPLOY_ASSETS_DIR / "grid_features_kruger.parquet").exists():
+    PARQUET_KRUGER = DEPLOY_ASSETS_DIR / "grid_features_kruger.parquet"
+
 TRACKS_PARQUET = DATA_DIR / "clean_tracks.parquet"
+
 VILLAGES_KRUGER_CSV = DATA_DIR / "raw" / "villages.csv"
+if not VILLAGES_KRUGER_CSV.exists() and (DEPLOY_ASSETS_DIR / "villages_kruger.csv").exists():
+    VILLAGES_KRUGER_CSV = DEPLOY_ASSETS_DIR / "villages_kruger.csv"
 
 # Global in-memory resources
 model = None
@@ -648,6 +665,8 @@ def get_tracks_sample(
 def get_feature_importance_chart():
     """Returns the rendered SHAP feature importance chart image."""
     chart_path = MODELS_DIR / "feature_importance.png"
+    if not chart_path.exists() and (DEPLOY_ASSETS_DIR / "feature_importance.png").exists():
+        chart_path = DEPLOY_ASSETS_DIR / "feature_importance.png"
     if not chart_path.exists():
         raise HTTPException(status_code=404, detail="Feature importance chart not found.")
     return FileResponse(chart_path, media_type="image/png")

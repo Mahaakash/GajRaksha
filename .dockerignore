@@ -20,6 +20,8 @@ models/
 .env
 .env.*
 *.png
+!backend/deploy_assets/feature_importance.png
 *.pdf
 .DS_Store
 Thumbs.db
+
