@@ -97,6 +97,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/")
+@app.head("/")
+def root():
+    """Root health and service status endpoint."""
+    return {
+        "status": "online",
+        "service": "GajRaksha API",
+        "elephant_presence_risk_near_villages": True,
+        "docs": "/docs"
+    }
+
+
+@app.get("/health")
+@app.head("/health")
+def health_check():
+    """Render health check endpoint."""
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "service": "GajRaksha API"
+    }
+
 FEATURE_COLS = [
     "hour_of_day",
     "is_night",
